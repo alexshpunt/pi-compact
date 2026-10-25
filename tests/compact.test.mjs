@@ -11,7 +11,9 @@ import {
 
 const extension = fileURLToPath(new URL("../index.ts", import.meta.url));
 const artifacts = fileURLToPath(new URL("../.tmp/test-runs", import.meta.url));
+const request = "Complete the planning milestone, compact, and continue implementation.";
 const continuation = "\nPlanning is complete.\nNEXT: write result.txt containing done.  \n";
+const isContinuation = (entry) => entry.type === "custom_message" && entry.customType === "compact-continuation";
 const call = (id, name, args) => assistantMessage([toolCall({ id, name, arguments: args })], { stopReason: "toolUse" });
 const content = (message) => typeof message.content === "string" ? message.content : (message.content ?? []).filter((block) => block.type === "text").map((block) => block.text).join("");
 
@@ -35,7 +37,7 @@ async function run(t, name, conversation, { settings = {}, extensions = [] } = {
     isolateUserResources: false,
     environment: { PI_CODING_AGENT_DIR: join(cwd, "agent") },
     timeoutMs: 20000,
-  }).run("Complete the planning milestone, compact, and continue implementation.");
+  }).run(request);
   return { result, cwd };
 }
 
@@ -46,7 +48,7 @@ function sessionEntries(result) {
   return result.traceEvents.filter((event) => event.type === "session_snapshot").at(-1).branch;
 }
 
-test("native compaction is followed by the exact user message and resumed work", async (t) => {
+test("native compaction preserves continuation provenance and resumes work", async (t) => {
   const { result, cwd } = await run(t, "native-handoff", [
     readHistory(), compact(),
     assistantMessage([text("Planning completed. Implement the next step.")]),
@@ -59,9 +61,14 @@ test("native compaction is followed by the exact user message and resumed work",
   const summaryIndex = entries.findIndex((entry) => entry.type === "compaction");
   assert.ok(summaryIndex >= 0, "Pi saved a native compaction entry");
   assert.notEqual(entries[summaryIndex].fromHook, true, "the native summarizer ran");
-  const handoffIndex = entries.findIndex((entry) => entry.type === "message" && entry.message.role === "user" && content(entry.message) === continuation);
-  assert.ok(handoffIndex > summaryIndex, "the exact continuation was journaled after compaction");
-  assert.equal(entries.filter((entry) => entry.type === "message" && entry.message.role === "user" && content(entry.message) === continuation).length, 1);
+  const handoffIndex = entries.findIndex(isContinuation);
+  assert.ok(handoffIndex > summaryIndex, "the continuation was journaled after compaction with its provenance");
+  const handoffs = entries.filter(isContinuation);
+  assert.equal(handoffs.length, 1);
+  assert.equal(content(handoffs[0]), continuation);
+  assert.equal(handoffs[0].display, true);
+  const userMessages = entries.filter((entry) => entry.type === "message" && entry.message.role === "user");
+  assert.deepEqual(userMessages.map((entry) => content(entry.message)), [request], "original-request exports and last-user consumers still see only the human request");
   assert.equal(result.providerRequests.length, 5, "no extra agent request ran before compaction");
 });
 
@@ -73,6 +80,7 @@ test("a session with nothing to compact keeps running without sending the contin
   assert.equal(getToolExecutionDetails(getToolExecution(result, "checkpoint")).status, "scheduled");
   const entries = await sessionEntries(result);
   assert.equal(entries.filter((entry) => entry.type === "compaction").length, 0);
+  assert.equal(entries.some(isContinuation), false);
   assert.equal(entries.some((entry) => entry.type === "message" && entry.message.role === "user" && content(entry.message) === continuation), false);
 });
 
@@ -90,6 +98,7 @@ test("cancelled compaction reports failure without delivering the success contin
   });
   const entries = await sessionEntries(result);
   assert.equal(entries.filter((entry) => entry.type === "compaction").length, 0);
+  assert.equal(entries.some(isContinuation), false);
   assert.equal(entries.some((entry) => entry.type === "message" && entry.message.role === "user" && content(entry.message) === continuation), false);
   assert.equal(entries.some((entry) => entry.type === "custom_message" && entry.customType === "compact-error"), true);
 });
