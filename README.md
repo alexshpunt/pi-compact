@@ -4,9 +4,9 @@ One agent tool: `compact({ message })`.
 
 Use it at a meaningful milestone, such as moving from planning to implementation, from implementation to integration or testing, or from one completed feature to the next.
 
-The tool ends the current agent run and invokes Pi's native compaction, including Pi's own check for whether there is anything to compact. After success, it sends `message` verbatim as the next user message and starts the next run. Include the completed milestone, relevant state, and the next action in that message.
+The tool ends the current agent run and invokes Pi's native compaction, including Pi's own check for whether there is anything to compact. After success, it sends `message` verbatim as a `compact-continuation` custom message and starts the next run. The continuation is extension-authored and does not create a user-role message or change the user's request. Include the completed milestone, relevant state, and the next action in that message.
 
-If Pi has nothing to compact, or compaction fails or is cancelled, the agent receives Pi's reason and continues with the existing context. The continuation message is sent only after successful compaction.
+If Pi has nothing to compact, or compaction fails or is cancelled, the agent receives Pi's reason and continues with the existing context. The continuation message is sent only after successful compaction. An aborted agent run discards its scheduled compaction. Switching sessions invalidates pending work and callbacks.
 
 There are no context thresholds, tool locks, custom summarizer, commands, skills, or footer. Pi's normal retention settings and per-model overrides apply. The tool is model-only so its end-of-run behavior cannot be lost inside a Codemode script; call it directly, by itself.
 
