@@ -31,10 +31,11 @@ export default function compactExtension(pi: ExtensionAPI) {
   });
 
   // Native compaction aborts an active run, so start it only after this tool's run has settled.
-  pi.on("agent_settled", (_event, ctx) => {
+  pi.on("agent_settled", (event, ctx) => {
     if (pending === undefined) return;
     const message = pending;
     pending = undefined;
+    if (event.aborted) return;
     const epoch = generation;
     ctx.compact({
       onComplete: () => {
