@@ -1,0 +1,37 @@
+{
+  "name": "@alexshp/pi-compact",
+  "version": "0.1.0",
+  "description": "A single tool for native Pi compaction with an exact continuation message.",
+  "type": "module",
+  "license": "MIT",
+  "keywords": [
+    "pi-package",
+    "pi-extension"
+  ],
+  "files": [
+    "index.ts",
+    "README.md",
+    "LICENSE"
+  ],
+  "pi": {
+    "extensions": [
+      "./index.ts"
+    ]
+  },
+  "peerDependencies": {
+    "@earendil-works/pi-coding-agent": "*",
+    "typebox": "*"
+  },
+  "devDependencies": {
+    "@earendil-works/pi-coding-agent": "^1.4.0",
+    "pi-coding-agent-test": "^0.1.1",
+    "typescript": "^5.9.3"
+  },
+  "scripts": {
+    "test": "node --test --test-concurrency=1 tests/compact.test.mjs",
+    "typecheck": "tsc --noEmit --module NodeNext --moduleResolution NodeNext --target ES2022 --strict --skipLibCheck index.ts tests/fixtures/cancel.ts"
+  },
+  "engines": {
+    "node": ">=22.19.0"
+  }
+}
