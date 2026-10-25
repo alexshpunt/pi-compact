@@ -8,7 +8,7 @@ export default function compactExtension(pi: ExtensionAPI) {
   pi.registerTool({
     name: "compact",
     label: "Compact",
-    description: "Use compact to start the next stage of work with a smaller context and your own continuation message. Pi performs its normal compaction and then sends your message verbatim as the next user message, starting another agent run. If there is nothing to compact, continue in the current context.",
+    description: "Use compact to start the next stage of work with a smaller context and your own continuation message. Pi performs its normal compaction and then sends your message verbatim as an extension-authored continuation, starting another agent run without creating a user request. If there is nothing to compact, continue in the current context.",
     promptSnippet: "Compact context and resume from your next message",
     promptGuidelines: [
       "Call compact at a meaningful milestone: after planning before implementation, after implementation before integration or testing, or after finishing one feature before starting the next.",
@@ -17,13 +17,13 @@ export default function compactExtension(pi: ExtensionAPI) {
     exposure: "model-only",
     executionMode: "sequential",
     parameters: Type.Object({
-      message: Type.String({ description: "Write the exact next user message: the completed milestone, relevant state and decisions, and the next action to perform after compaction." }),
+      message: Type.String({ description: "Write your exact continuation: the completed milestone, relevant state and decisions, and the next action within the existing user request." }),
     }),
     async execute(_id, { message }) {
       if (pending !== undefined) throw new Error("A compaction is already scheduled.");
       pending = message;
       return {
-        content: [{ type: "text", text: "Compaction scheduled. This run ends here; your next message will be sent after compaction succeeds." }],
+        content: [{ type: "text", text: "Compaction scheduled. This run ends here; your continuation will be sent after compaction succeeds." }],
         details: { status: "scheduled" },
         terminate: true,
       };
@@ -38,7 +38,12 @@ export default function compactExtension(pi: ExtensionAPI) {
     const epoch = generation;
     ctx.compact({
       onComplete: () => {
-        if (epoch === generation) pi.sendUserMessage(message, { expandPromptTemplates: false });
+        if (epoch !== generation) return;
+        pi.sendMessage({
+          customType: "compact-continuation",
+          content: message,
+          display: true,
+        }, { triggerTurn: true });
       },
       onError: (error) => {
         if (epoch !== generation) return;
