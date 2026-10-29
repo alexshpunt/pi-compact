@@ -17,7 +17,7 @@ export default function compactExtension(pi: ExtensionAPI) {
     exposure: "model-only",
     executionMode: "sequential",
     parameters: Type.Object({
-      message: Type.String({ description: "Write your exact continuation: the completed milestone, relevant state and decisions, and the next action within the existing user request." }),
+      message: Type.String({ description: "Write a short message to yourself with the next action and any facts that need special attention. Pi summarizes the session during compaction; do not repeat the session summary." }),
     }),
     async execute(_id, { message }) {
       if (pending !== undefined) throw new Error("A compaction is already scheduled.");
