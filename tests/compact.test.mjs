@@ -23,6 +23,7 @@ async function run(t, name, conversation, { settings = {}, extensions = [] } = {
     compaction: { enabled: false, keepRecentTokens: 1500, ...settings },
   }));
   await writeFile(join(cwd, "history.txt"), "Planning evidence: verified input and next implementation step.\n".repeat(500));
+  await writeFile(join(cwd, "recent.txt"), "Recent retained evidence: 83917\n");
   const result = await new PiIntegrationTest({
     testName: name,
     cwd,
@@ -73,6 +74,52 @@ test("explicit compaction works on a short session regardless of retention setti
   assert.equal(compactions.length, 1);
   assert.equal(compactions[0].summary, summary);
   assert.equal(result.providerRequests.length, 2);
+});
+
+test("recent tool calls and results survive while older history is compacted", async (t) => {
+  const { result } = await run(t, "retained-tail", [
+    readHistory(),
+    call("recent", "read", { path: "recent.txt" }),
+    compact(),
+    assistantMessage([text("Continued.")]),
+  ], { settings: { keepRecentTokens: 200 } });
+  const messages = result.providerRequests[3].messages;
+  assert.ok(messages.some((message) => content(message).includes(summary)));
+  assert.ok(!messages.some((message) => content(message).includes("Planning evidence: verified input")));
+  const toolCallIndex = messages.findIndex((message) => message.role === "assistant" &&
+    Array.isArray(message.content) && message.content.some((block) => block.type === "toolCall" && block.id === "recent"));
+  const resultIndex = messages.findIndex((message) => message.role === "toolResult" &&
+    message.toolCallId === "recent" && content(message).includes("Recent retained evidence: 83917"));
+  assert.ok(toolCallIndex >= 0, "recent tool call is retained");
+  assert.ok(resultIndex > toolCallIndex, "the matching result follows its call");
+});
+
+test("model retention override keeps a short conversation and its tool result", async (t) => {
+  const { result } = await run(t, "retention-model-override", [
+    call("recent", "read", { path: "recent.txt" }), compact(), assistantMessage([text("Continued.")]),
+  ], { settings: { keepRecentTokens: 0, modelOverrides: { "scripted/scripted-model": { keepRecentTokens: 1000000 } } } });
+  const messages = result.providerRequests[2].messages;
+  assert.ok(messages.some((message) => message.role === "user" && content(message) === request));
+  assert.ok(messages.some((message) => message.role === "toolResult" && message.toolCallId === "recent" &&
+    content(message).includes("Recent retained evidence: 83917")));
+  assert.equal(result.providerRequests.length, 3);
+});
+
+test("repeated compaction retains the recent tail without restoring old messages", async (t) => {
+  const secondSummary = "Second checkpoint: continue.";
+  const { result } = await run(t, "repeated-retention", [
+    readHistory(),
+    call("recent", "read", { path: "recent.txt" }),
+    compact(),
+    call("checkpoint-2", "compact", { summary: secondSummary }),
+    assistantMessage([text("Continued.")]),
+  ], { settings: { keepRecentTokens: 200 } });
+  const messages = result.providerRequests[4].messages;
+  assert.ok(messages.some((message) => content(message).includes(secondSummary)));
+  assert.ok(messages.some((message) => message.role === "toolResult" && message.toolCallId === "recent" &&
+    content(message).includes("Recent retained evidence: 83917")));
+  assert.ok(!messages.some((message) => content(message).includes("Planning evidence: verified input")));
+  assert.equal(sessionEntries(result).filter((entry) => entry.type === "compaction").length, 2);
 });
 
 test("an empty summary is rejected without compacting", async (t) => {

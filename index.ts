@@ -1,5 +1,29 @@
-import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import { estimateTokens, SettingsManager, type ExtensionAPI, type ProjectedSessionEntry } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
+
+function firstKeptEntryId(entries: ProjectedSessionEntry[], persistedIds: Set<string>, keepRecentTokens: number): string | null {
+  // The preview can contain draft entries whose IDs will change when committed.
+  // Only select persisted, visible message boundaries, never a tool result.
+  const cutPoints = entries.flatMap((entry, index) =>
+    persistedIds.has(entry.sourceEntry.id) && entry.sourceEntry.type !== "compaction" &&
+    entry.messages.some((message) => ["user", "assistant", "bashExecution", "custom", "branchSummary", "compactionSummary"].includes(message.role))
+      ? [index] : [],
+  );
+  if (cutPoints.length === 0) return null;
+
+  let tokens = 0;
+  let cutIndex = cutPoints[0];
+  for (let i = entries.length - 1; i >= 0; i--) {
+    const size = entries[i].messages.reduce((sum, message) => sum + estimateTokens(message), 0);
+    if (size === 0) continue;
+    tokens += size;
+    if (tokens >= keepRecentTokens) {
+      cutIndex = cutPoints.find((candidate) => candidate >= i) ?? cutPoints[cutPoints.length - 1];
+      break;
+    }
+  }
+  return entries[cutIndex].sourceEntry.id;
+}
 
 export default function compactExtension(pi: ExtensionAPI) {
   let pending: string | undefined;
@@ -7,7 +31,7 @@ export default function compactExtension(pi: ExtensionAPI) {
   pi.registerTool({
     name: "compact",
     label: "Compact",
-    description: "Compact the current context using a summary you write, then continue the task. Your summary becomes the only retained conversation context; Pi does not make a separate summarization request. Call this tool directly, by itself, at a meaningful milestone.",
+    description: "Compact older context using a summary you write, retain recent messages according to Pi's compaction settings, then continue the task. Pi does not make a separate summarization request. Call this tool directly, by itself, at a meaningful milestone.",
     promptSnippet: "Compact context using your own task summary and continue",
     promptGuidelines: [
       "Call compact at a meaningful milestone: after planning before implementation, after implementation before integration or testing, or after finishing one feature before starting the next.",
@@ -30,14 +54,17 @@ export default function compactExtension(pi: ExtensionAPI) {
     },
   });
 
-  pi.on("agent_before_settle", (event) => {
+  pi.on("agent_before_settle", (event, ctx) => {
     if (pending === undefined || event.outcome !== "completed") return;
     const summary = pending;
     pending = undefined;
+    const settings = SettingsManager.create(ctx.cwd, undefined, { projectTrusted: ctx.isProjectTrusted() }).getCompactionSettings(ctx.model);
+    const persistedIds = new Set(ctx.sessionManager.getBranch().map((entry) => entry.id));
+    const firstKept = firstKeptEntryId(event.context.contextEntries, persistedIds, settings.keepRecentTokens);
     return {
       entries: [
         ...event.entries,
-        { type: "compaction", summary, firstKeptEntryId: null },
+        { type: "compaction", summary, firstKeptEntryId: firstKept },
         { type: "custom_message", customType: "compact-continuation", content: "Continue the unfinished task described in the summary.", display: false },
       ],
       continue: true,
