@@ -5,15 +5,13 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { test } from "node:test";
 import {
-  PiIntegrationTest, assistantMessage, text, toolCall,
-  getToolExecution, getToolExecutionDetails,
+  PiIntegrationTest, assistantMessage, text, toolCall, getToolExecution,
 } from "pi-coding-agent-test";
 
 const extension = fileURLToPath(new URL("../index.ts", import.meta.url));
 const artifacts = fileURLToPath(new URL("../.tmp/test-runs", import.meta.url));
 const request = "Complete the planning milestone, compact, and continue implementation.";
-const continuation = "\nPlanning is complete.\nNEXT: write result.txt containing done.  \n";
-const isContinuation = (entry) => entry.type === "custom_message" && entry.customType === "compact-continuation";
+const summary = "\nPlanning is complete.\nNEXT: write result.txt containing done.  \n";
 const call = (id, name, args) => assistantMessage([toolCall({ id, name, arguments: args })], { stopReason: "toolUse" });
 const content = (message) => typeof message.content === "string" ? message.content : (message.content ?? []).filter((block) => block.type === "text").map((block) => block.text).join("");
 
@@ -42,63 +40,46 @@ async function run(t, name, conversation, { settings = {}, extensions = [] } = {
 }
 
 const readHistory = () => call("history", "read", { path: "history.txt" });
-const compact = () => call("checkpoint", "compact", { message: continuation });
+const compact = (value = summary) => call("checkpoint", "compact", { summary: value });
+const sessionEntries = (result) => result.traceEvents.filter((event) => event.type === "session_snapshot").at(-1).branch;
 
-function sessionEntries(result) {
-  return result.traceEvents.filter((event) => event.type === "session_snapshot").at(-1).branch;
-}
-
-test("native compaction preserves continuation provenance and resumes work", async (t) => {
-  const { result, cwd } = await run(t, "native-handoff", [
+test("agent-written summary is persisted unchanged and work resumes without a summarization request", async (t) => {
+  const { result, cwd } = await run(t, "agent-summary-handoff", [
     readHistory(), compact(),
-    assistantMessage([text("Planning completed. Implement the next step.")]),
     call("result", "write", { path: "result.txt", content: "done" }),
     assistantMessage([text("Finished.")]),
   ]);
   assert.equal(getToolExecution(result, "checkpoint").isError, false);
   assert.equal(await readFile(join(cwd, "result.txt"), "utf8"), "done");
-  const entries = await sessionEntries(result);
-  const summaryIndex = entries.findIndex((entry) => entry.type === "compaction");
-  assert.ok(summaryIndex >= 0, "Pi saved a native compaction entry");
-  assert.notEqual(entries[summaryIndex].fromHook, true, "the native summarizer ran");
-  const handoffIndex = entries.findIndex(isContinuation);
-  assert.ok(handoffIndex > summaryIndex, "the continuation was journaled after compaction with its provenance");
-  const handoffs = entries.filter(isContinuation);
-  assert.equal(handoffs.length, 1);
-  assert.equal(content(handoffs[0]), continuation);
-  assert.equal(handoffs[0].display, true);
+  const entries = sessionEntries(result);
+  const compactions = entries.filter((entry) => entry.type === "compaction");
+  assert.equal(compactions.length, 1);
+  assert.equal(compactions[0].summary, summary);
+  assert.equal(compactions[0].fromHook, true);
   const userMessages = entries.filter((entry) => entry.type === "message" && entry.message.role === "user");
-  assert.deepEqual(userMessages.map((entry) => content(entry.message)), [request], "original-request exports and last-user consumers still see only the human request");
-  assert.equal(result.providerRequests.length, 5, "no extra agent request ran before compaction");
+  assert.deepEqual(userMessages.map((entry) => content(entry.message)), [request]);
+  assert.equal(result.providerRequests.length, 4, "only the four scripted agent responses were requested");
+  const resumedMessages = result.providerRequests[2].messages;
+  assert.ok(resumedMessages.some((message) => content(message).includes(summary)), "the next request receives the supplied summary");
+  assert.ok(!resumedMessages.some((message) => content(message).includes("Planning evidence: verified input")), "the next request does not retain the old tool result");
 });
 
-test("a session with nothing to compact keeps running without sending the continuation", async (t) => {
-  const { result } = await run(t, "nothing-to-compact", [compact(), assistantMessage([text("Continuing in the current context.")])], {
-    settings: { keepRecentTokens: 1000000 },
-  });
+test("explicit compaction works on a short session regardless of retention settings", async (t) => {
+  const { result } = await run(t, "short-session", [
+    compact(), assistantMessage([text("Continued.")]),
+  ], { settings: { keepRecentTokens: 1000000, modelOverrides: { "scripted/scripted-model": { keepRecentTokens: 1000000 } } } });
   assert.equal(getToolExecution(result, "checkpoint").isError, false);
-  assert.equal(getToolExecutionDetails(getToolExecution(result, "checkpoint")).status, "scheduled");
-  const entries = await sessionEntries(result);
-  assert.equal(entries.filter((entry) => entry.type === "compaction").length, 0);
-  assert.equal(entries.some(isContinuation), false);
-  assert.equal(entries.some((entry) => entry.type === "message" && entry.message.role === "user" && content(entry.message) === continuation), false);
+  const compactions = sessionEntries(result).filter((entry) => entry.type === "compaction");
+  assert.equal(compactions.length, 1);
+  assert.equal(compactions[0].summary, summary);
+  assert.equal(result.providerRequests.length, 2);
 });
 
-test("the availability check respects Pi's per-model retention setting", async (t) => {
-  const { result } = await run(t, "model-retention", [readHistory(), compact(), assistantMessage([text("Keeping the current context.")])], {
-    settings: { modelOverrides: { "scripted/scripted-model": { keepRecentTokens: 1000000 } } },
-  });
-  assert.equal(getToolExecutionDetails(getToolExecution(result, "checkpoint")).status, "scheduled");
-  assert.equal((await sessionEntries(result)).filter((entry) => entry.type === "compaction").length, 0);
-});
-
-test("cancelled compaction reports failure without delivering the success continuation", async (t) => {
-  const { result } = await run(t, "cancelled-compaction", [readHistory(), compact(), assistantMessage([text("Recovered in the current context.")])], {
-    extensions: [fileURLToPath(new URL("./fixtures/cancel.ts", import.meta.url))],
-  });
-  const entries = await sessionEntries(result);
-  assert.equal(entries.filter((entry) => entry.type === "compaction").length, 0);
-  assert.equal(entries.some(isContinuation), false);
-  assert.equal(entries.some((entry) => entry.type === "message" && entry.message.role === "user" && content(entry.message) === continuation), false);
-  assert.equal(entries.some((entry) => entry.type === "custom_message" && entry.customType === "compact-error"), true);
+test("an empty summary is rejected without compacting", async (t) => {
+  const { result } = await run(t, "empty-summary", [
+    compact(""), assistantMessage([text("Continued without compaction.")]),
+  ]);
+  assert.equal(getToolExecution(result, "checkpoint").isError, true);
+  assert.equal(sessionEntries(result).some((entry) => entry.type === "compaction"), false);
+  assert.equal(result.providerRequests.length, 2);
 });

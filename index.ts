@@ -3,62 +3,47 @@ import { Type } from "typebox";
 
 export default function compactExtension(pi: ExtensionAPI) {
   let pending: string | undefined;
-  let generation = 0;
 
   pi.registerTool({
     name: "compact",
     label: "Compact",
-    description: "Use compact to start the next stage of work with a smaller context and your own continuation message. Pi performs its normal compaction and then sends your message verbatim as an extension-authored continuation, starting another agent run without creating a user request. If there is nothing to compact, continue in the current context.",
-    promptSnippet: "Compact context and resume from your next message",
+    description: "Compact the current context using a summary you write, then continue the task. Your summary becomes the only retained conversation context; Pi does not make a separate summarization request. Call this tool directly, by itself, at a meaningful milestone.",
+    promptSnippet: "Compact context using your own task summary and continue",
     promptGuidelines: [
       "Call compact at a meaningful milestone: after planning before implementation, after implementation before integration or testing, or after finishing one feature before starting the next.",
-      "Call compact directly, by itself, after finishing the current step. Continue only the unfinished work described in the next message.",
+      "Write a concise summary of the current task: goal, progress, decisions, next actions, and important new task-specific facts that cannot be recovered. Preserve what is needed to continue; omit generic rules already available in AGENTS.md, skills, or other infrastructure.",
     ],
     exposure: "model-only",
     executionMode: "sequential",
     parameters: Type.Object({
-      message: Type.String({ description: "Write a short message to yourself with the next action and any facts that need special attention. Pi summarizes the session during compaction; do not repeat the session summary." }),
+      summary: Type.String({ description: "Write the context needed to continue the current task after compaction, including the next action." }),
     }),
-    async execute(_id, { message }) {
+    async execute(_id, { summary }) {
+      if (!summary.trim()) throw new Error("The summary must not be empty.");
       if (pending !== undefined) throw new Error("A compaction is already scheduled.");
-      pending = message;
+      pending = summary;
       return {
-        content: [{ type: "text", text: "Compaction scheduled. This run ends here; your continuation will be sent after compaction succeeds." }],
+        content: [{ type: "text", text: "Compaction scheduled. This run will continue from your summary." }],
         details: { status: "scheduled" },
         terminate: true,
       };
     },
   });
 
-  // Native compaction aborts an active run, so start it only after this tool's run has settled.
-  pi.on("agent_settled", (event, ctx) => {
-    if (pending === undefined) return;
-    const message = pending;
+  pi.on("agent_before_settle", (event) => {
+    if (pending === undefined || event.outcome !== "completed") return;
+    const summary = pending;
     pending = undefined;
-    if (event.aborted) return;
-    const epoch = generation;
-    ctx.compact({
-      onComplete: () => {
-        if (epoch !== generation) return;
-        pi.sendMessage({
-          customType: "compact-continuation",
-          content: message,
-          display: true,
-        }, { triggerTurn: true });
-      },
-      onError: (error) => {
-        if (epoch !== generation) return;
-        pi.sendMessage({
-          customType: "compact-error",
-          content: `Compaction failed: ${error.message}. The continuation message was not sent. Continue in the current context.`,
-          display: true,
-        }, { triggerTurn: true });
-      },
-    });
+    return {
+      entries: [
+        ...event.entries,
+        { type: "compaction", summary, firstKeptEntryId: null },
+        { type: "custom_message", customType: "compact-continuation", content: "Continue the unfinished task described in the summary.", display: false },
+      ],
+      continue: true,
+    };
   });
 
-  pi.on("session_shutdown", () => {
-    generation += 1;
-    pending = undefined;
-  });
+  pi.on("agent_settled", () => { pending = undefined; });
+  pi.on("session_shutdown", () => { pending = undefined; });
 }
