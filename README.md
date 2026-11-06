@@ -1,14 +1,12 @@
 # pi-compact
 
-One agent tool: `compact({ message })`.
+One agent tool: `compact({ summary })`.
 
-Use it at a meaningful milestone, such as moving from planning to implementation, from implementation to integration or testing, or from one completed feature to the next.
+At a meaningful milestone, the working agent writes a summary of what is needed to continue the current task and calls the tool directly. Pi saves that text as a compaction entry and continues from it, without a separate summarization request. The summary should include the goal, current state, next actions, decisions and important task-specific facts that cannot be recovered; it should leave out generic instructions already available in project files, skills or other infrastructure.
 
-The tool ends the current agent run and invokes Pi's native compaction, including Pi's own check for whether there is anything to compact. After success, it sends `message` verbatim as a `compact-continuation` custom message and starts the next run. The continuation is extension-authored and does not create a user-role message or change the user's request. Keep the message short: include the next action and any facts that need special attention. Pi summarizes the session during compaction, so do not repeat the session summary.
+The compaction replaces older conversation context with the supplied summary and retains a recent tail. The tail uses Pi's `compaction.keepRecentTokens` setting, including model-specific overrides, and keeps tool calls with their results. Retention is approximate and may keep less than the configured budget at a safe message boundary. Session history remains in the session file. The next request receives an extension-authored continuation, not a new human request. An aborted run or a session switch discards pending work.
 
-If Pi has nothing to compact, or compaction fails or is cancelled, the agent receives Pi's reason and continues with the existing context. The continuation message is sent only after successful compaction. An aborted agent run discards its scheduled compaction. Switching sessions invalidates pending work and callbacks.
-
-There are no context thresholds, tool locks, custom summarizer, commands, skills, or footer. Pi's normal retention settings and per-model overrides apply. The tool is model-only so its end-of-run behavior cannot be lost inside a Codemode script; call it directly, by itself.
+This tool does not change Pi's automatic compaction settings. Native automatic compaction remains available as an overflow fallback when enabled. Unlike native manual compaction, this tool does not check whether the context is large enough. The tool is model-only; call it directly, by itself.
 
 ## Install
 
@@ -32,4 +30,4 @@ npm rebuild node-pty
 npm test
 ```
 
-The tests run real Pi processes with scripted model responses. No provider credentials or paid inference are needed. Use a Pi version that supports model-only tools, `terminate`, and `agent_settled`.
+The tests run real Pi processes with scripted model responses. No provider credentials or paid inference are needed. Use a Pi version that supports model-only tools, `terminate`, and `agent_before_settle` compaction entries.
