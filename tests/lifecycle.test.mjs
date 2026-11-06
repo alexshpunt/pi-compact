@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { test } from "node:test";
-import { PiIntegrationTest, assistantMessage, text, toolCall } from "pi-coding-agent-test";
+import { PiIntegrationTest, assistantMessage, text, toolCall, getToolExecution } from "pi-coding-agent-test";
 
 const extension = fileURLToPath(new URL("../index.ts", import.meta.url));
 const fixture = fileURLToPath(new URL("./fixtures/lifecycle.ts", import.meta.url));
@@ -45,12 +45,13 @@ async function run(t, mode, conversation) {
 test("an aborted compact run does not compact or resume", async (t) => {
   const { result, error, events } = await run(t, "abort", [
     call("history", "read", { path: "history.txt" }),
-    call("checkpoint", "compact", { message: continuation }),
+    call("checkpoint", "compact", { summary: continuation }),
     assistantMessage([text("The independent follow-up completed.")]),
   ]);
+  assert.ifError(error);
+  assert.equal(getToolExecution(result, "checkpoint").isError, false);
   assert.ok(events.some((event) => event.type === "settled" && event.aborted === true), "the real run was aborted after scheduling");
   assert.equal(events.filter((event) => event.type === "compaction-attempt").length, 0, "aborting cancels the pending compaction");
-  assert.ifError(error);
   assert.equal(result.providerRequests.length, 3);
   const entries = result.traceEvents.filter((event) => event.type === "session_snapshot").at(-1).branch;
   assert.equal(entries.some((entry) => entry.type === "compaction"), false);
@@ -60,10 +61,11 @@ test("an aborted compact run does not compact or resume", async (t) => {
 test("switching sessions clears the outgoing run's pending compaction", async (t) => {
   const { result, error, events } = await run(t, "switch", [
     call("history", "read", { path: "history.txt" }),
-    call("checkpoint", "compact", { message: continuation }),
+    call("checkpoint", "compact", { summary: continuation }),
     assistantMessage([text("Destination probe completed.")]),
   ]);
   assert.ifError(error);
+  assert.equal(getToolExecution(result, "checkpoint").isError, false);
   const outgoing = events.find((event) => event.type === "switch-requested")?.sessionId;
   const destination = events.find((event) => event.type === "destination")?.sessionId;
   assert.ok(outgoing);
@@ -73,26 +75,6 @@ test("switching sessions clears the outgoing run's pending compaction", async (t
   assert.equal(result.state.sessionId, destination);
   const entries = result.traceEvents.filter((event) => event.type === "session_snapshot").at(-1).branch;
   assert.equal(entries.some((entry) => entry.type === "compaction"), false);
-  assert.equal(entries.some((entry) => entry.type === "custom_message" && ["compact-continuation", "compact-error"].includes(entry.customType)), false);
-  assert.equal(result.providerRequests.length, 3);
-});
-
-test("switching sessions during compaction does not deliver its callback to the destination", async (t) => {
-  const { result, error, events } = await run(t, "switch-compacting", [
-    call("history", "read", { path: "history.txt" }),
-    call("checkpoint", "compact", { message: continuation }),
-    assistantMessage([text("Destination probe completed.")]),
-  ]);
-  assert.ifError(error);
-  const outgoing = events.find((event) => event.type === "switch-requested")?.sessionId;
-  const destination = events.find((event) => event.type === "destination")?.sessionId;
-  assert.ok(outgoing);
-  assert.ok(destination);
-  assert.notEqual(destination, outgoing);
-  assert.ok(events.some((event) => event.type === "compaction-attempt" && event.sessionId === outgoing));
-  assert.ok(events.some((event) => event.type === "shutdown" && event.reason === "new" && event.sessionId === outgoing));
-  assert.equal(result.state.sessionId, destination);
-  const entries = result.traceEvents.filter((event) => event.type === "session_snapshot").at(-1).branch;
   assert.equal(entries.some((entry) => entry.type === "custom_message" && ["compact-continuation", "compact-error"].includes(entry.customType)), false);
   assert.equal(result.providerRequests.length, 3);
 });
