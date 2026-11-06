@@ -1,7 +1,7 @@
 {
   "name": "@alexshp/pi-compact",
   "version": "0.1.0",
-  "description": "A single tool for native Pi compaction with an exact continuation message.",
+  "description": "A Pi tool for agent-authored context compaction.",
   "type": "module",
   "license": "MIT",
   "keywords": [
