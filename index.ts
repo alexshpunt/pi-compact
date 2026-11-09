@@ -27,6 +27,30 @@ function firstKeptEntryId(entries: ProjectedSessionEntry[], persistedIds: Set<st
 
 export default function compactExtension(pi: ExtensionAPI) {
   let pending: string | undefined;
+  let warnedThreshold = 0;
+  let lastCompactionId: string | undefined;
+
+  pi.on("turn_end", (event, ctx) => {
+    if (event.outcome !== "completed" || pending !== undefined) return;
+    const compaction = ctx.sessionManager.getBranch().reverse().find((entry) => entry.type === "compaction");
+    if (compaction?.id !== lastCompactionId) {
+      warnedThreshold = 0;
+      lastCompactionId = compaction?.id;
+    }
+    const percent = ctx.getContextUsage()?.percent;
+    if (percent == null || !Number.isFinite(percent)) return;
+    const threshold = Math.floor(percent / 5) * 5;
+    if (threshold < 80 || threshold <= warnedThreshold) return;
+    warnedThreshold = threshold;
+    const remaining = Math.max(0, Math.floor(100 - percent));
+    return {
+      entries: [...event.entries, {
+        type: "custom_message", customType: "context-warning", display: false,
+        content: `Context is ${Math.floor(percent)}% full; approximately ${remaining}% remains. Compact immediately to avoid losing relevant information.`,
+      }],
+      continue: true,
+    };
+  });
 
   pi.registerTool({
     name: "compact",
@@ -72,5 +96,9 @@ export default function compactExtension(pi: ExtensionAPI) {
   });
 
   pi.on("agent_settled", () => { pending = undefined; });
-  pi.on("session_shutdown", () => { pending = undefined; });
+  pi.on("session_shutdown", () => {
+    pending = undefined;
+    warnedThreshold = 0;
+    lastCompactionId = undefined;
+  });
 }
