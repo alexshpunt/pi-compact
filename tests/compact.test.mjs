@@ -122,6 +122,21 @@ test("repeated compaction retains the recent tail without restoring old messages
   assert.equal(sessionEntries(result).filter((entry) => entry.type === "compaction").length, 2);
 });
 
+test("a fresh compaction drops the recent tail and the original request", async (t) => {
+  const { result } = await run(t, "fresh-compaction", [
+    readHistory(),
+    call("recent", "read", { path: "recent.txt" }),
+    call("checkpoint", "compact", { summary, fresh: true }),
+    assistantMessage([text("Continued.")]),
+  ], { settings: { keepRecentTokens: 1000000 } });
+  assert.equal(getToolExecution(result, "checkpoint").isError, false);
+  const messages = result.providerRequests[3].messages;
+  assert.ok(messages.some((message) => content(message).includes(summary)), "the next request receives the supplied summary");
+  assert.ok(!messages.some((message) => content(message).includes("Recent retained evidence: 83917")), "the recent tool result is dropped");
+  assert.ok(!messages.some((message) => content(message).includes("Planning evidence: verified input")), "older history is dropped");
+  assert.ok(!messages.some((message) => message.role === "user" && content(message) === request), "the original request is dropped");
+});
+
 test("an empty summary is rejected without compacting", async (t) => {
   const { result } = await run(t, "empty-summary", [
     compact(""), assistantMessage([text("Continued without compaction.")]),

@@ -26,7 +26,7 @@ function firstKeptEntryId(entries: ProjectedSessionEntry[], persistedIds: Set<st
 }
 
 export default function compactExtension(pi: ExtensionAPI) {
-  let pending: string | undefined;
+  let pending: { summary: string; fresh: boolean } | undefined;
   let warnedThreshold = 0;
   let lastCompactionId: string | undefined;
 
@@ -65,11 +65,12 @@ export default function compactExtension(pi: ExtensionAPI) {
     executionMode: "sequential",
     parameters: Type.Object({
       summary: Type.String({ description: "Write the context needed to continue the current task after compaction, including the next action." }),
+      fresh: Type.Optional(Type.Boolean({ description: "true also drops the recent messages, so work continues from the summary alone. Use it when the next step needs a clean context, such as reviewing your own work with fresh eyes. Default: false." })),
     }),
-    async execute(_id, { summary }) {
+    async execute(_id, { summary, fresh }) {
       if (!summary.trim()) throw new Error("The summary must not be empty.");
       if (pending !== undefined) throw new Error("A compaction is already scheduled.");
-      pending = summary;
+      pending = { summary, fresh: fresh === true };
       return {
         content: [{ type: "text", text: "Compaction scheduled. This run will continue from your summary." }],
         details: { status: "scheduled" },
@@ -80,11 +81,15 @@ export default function compactExtension(pi: ExtensionAPI) {
 
   pi.on("agent_before_settle", (event, ctx) => {
     if (pending === undefined || event.outcome !== "completed") return;
-    const summary = pending;
+    const { summary, fresh } = pending;
     pending = undefined;
-    const settings = SettingsManager.create(ctx.cwd, undefined, { projectTrusted: ctx.isProjectTrusted() }).getCompactionSettings(ctx.model);
-    const persistedIds = new Set(ctx.sessionManager.getBranch().map((entry) => entry.id));
-    const firstKept = firstKeptEntryId(event.context.contextEntries, persistedIds, settings.keepRecentTokens);
+    // Pi treats a missing first kept entry as retain-none.
+    let firstKept: string | null = null;
+    if (!fresh) {
+      const settings = SettingsManager.create(ctx.cwd, undefined, { projectTrusted: ctx.isProjectTrusted() }).getCompactionSettings(ctx.model);
+      const persistedIds = new Set(ctx.sessionManager.getBranch().map((entry) => entry.id));
+      firstKept = firstKeptEntryId(event.context.contextEntries, persistedIds, settings.keepRecentTokens);
+    }
     return {
       entries: [
         ...event.entries,

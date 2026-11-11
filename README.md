@@ -1,10 +1,10 @@
 # pi-compact
 
-One agent tool: `compact({ summary })`.
+One agent tool: `compact({ summary, fresh? })`.
 
 At a meaningful milestone, the working agent writes a summary of what is needed to continue the current task and calls the tool directly. Pi saves that text as a compaction entry and continues from it, without a separate summarization request. The summary should include the goal, current state, next actions, decisions and important task-specific facts that cannot be recovered; it should leave out generic instructions already available in project files, skills or other infrastructure.
 
-The compaction replaces older conversation context with the supplied summary and retains a recent tail. The tail uses Pi's `compaction.keepRecentTokens` setting, including model-specific overrides, and keeps tool calls with their results. Retention is approximate and may keep less than the configured budget at a safe message boundary. Session history remains in the session file. The next request receives an extension-authored continuation, not a new human request. An aborted run or a session switch discards pending work.
+The compaction replaces older conversation context with the supplied summary and retains a recent tail. The tail uses Pi's `compaction.keepRecentTokens` setting, including model-specific overrides, and keeps tool calls with their results. Retention is approximate and may keep less than the configured budget at a safe message boundary. With `fresh: true`, no tail is kept: the next request has the system prompt and the summary only, so the agent can continue with a clean context, for example to review its own work. Session history remains in the session file. The next request receives an extension-authored continuation, not a new human request. An aborted run or a session switch discards pending work.
 
 This tool does not change Pi's automatic compaction settings. Native automatic compaction remains available as an overflow fallback when enabled. Unlike native manual compaction, this tool does not check whether the context is large enough. The tool is model-only; call it directly, by itself.
 
