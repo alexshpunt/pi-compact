@@ -10,6 +10,7 @@
   ],
   "files": [
     "index.ts",
+    "native-compaction.ts",
     "README.md",
     "LICENSE"
   ],
