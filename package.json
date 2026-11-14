@@ -30,7 +30,7 @@
   },
   "scripts": {
     "test": "node --test --test-concurrency=1 tests/*.test.mjs",
-    "typecheck": "tsc --noEmit --module NodeNext --moduleResolution NodeNext --target ES2022 --strict --skipLibCheck index.ts tests/fixtures/cancel.ts tests/fixtures/lifecycle.ts"
+    "typecheck": "tsc --noEmit --module NodeNext --moduleResolution NodeNext --target ES2022 --strict --skipLibCheck index.ts tests/fixtures/cancel.ts tests/fixtures/lifecycle.ts tests/fixtures/native-lifecycle.ts"
   },
   "engines": {
     "node": ">=22.19.0"
