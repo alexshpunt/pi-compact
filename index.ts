@@ -1,8 +1,9 @@
-import { estimateTokens, SettingsManager, type ExtensionAPI, type ProjectedSessionEntry } from "@earendil-works/pi-coding-agent";
+import { randomUUID } from "node:crypto";
+import { estimateTokens, type ExtensionAPI, type ProjectedSessionEntry } from "@earendil-works/pi-coding-agent";
+import { createNativeCompactionAdapter } from "./native-compaction.js";
 import { Type } from "typebox";
 
 function firstKeptEntryId(entries: ProjectedSessionEntry[], persistedIds: Set<string>, keepRecentTokens: number): string | null {
-  // The preview can contain draft entries whose IDs will change when committed.
   // Only select persisted, visible message boundaries, never a tool result.
   const cutPoints = entries.flatMap((entry, index) =>
     persistedIds.has(entry.sourceEntry.id) && entry.sourceEntry.type !== "compaction" &&
@@ -26,7 +27,15 @@ function firstKeptEntryId(entries: ProjectedSessionEntry[], persistedIds: Set<st
 }
 
 export default function compactExtension(pi: ExtensionAPI) {
-  let pending: { summary: string; fresh: boolean } | undefined;
+  let adapter: ReturnType<typeof createNativeCompactionAdapter> | undefined;
+  let pending: {
+    summary: string; fresh: boolean; sessionId: string; instructions: string;
+    running: boolean; aborted: boolean; signal?: AbortSignal; unregister?: () => void;
+  } | undefined;
+  const clearPending = () => {
+    pending?.unregister?.();
+    pending = undefined;
+  };
   let warnedThreshold = 0;
   let lastCompactionId: string | undefined;
 
@@ -67,10 +76,13 @@ export default function compactExtension(pi: ExtensionAPI) {
       summary: Type.String({ description: "Write the context needed to continue the current task after compaction, including the next action." }),
       fresh: Type.Optional(Type.Boolean({ description: "true also drops the recent messages, so work continues from the summary alone. Use it when the next step needs a clean context, such as reviewing your own work with fresh eyes. Default: false." })),
     }),
-    async execute(_id, { summary, fresh }) {
+    async execute(_id, { summary, fresh }, _signal, _onUpdate, ctx) {
       if (!summary.trim()) throw new Error("The summary must not be empty.");
       if (pending !== undefined) throw new Error("A compaction is already scheduled.");
-      pending = { summary, fresh: fresh === true };
+      pending = {
+        summary, fresh: fresh === true, sessionId: ctx.sessionManager.getSessionId(),
+        instructions: `pi-compact:${randomUUID()}`, running: false, aborted: false,
+      };
       return {
         content: [{ type: "text", text: "Compaction scheduled. This run will continue from your summary." }],
         details: { status: "scheduled" },
@@ -79,30 +91,66 @@ export default function compactExtension(pi: ExtensionAPI) {
     },
   });
 
-  pi.on("agent_before_settle", (event, ctx) => {
-    if (pending === undefined || event.outcome !== "completed") return;
-    const { summary, fresh } = pending;
-    pending = undefined;
-    // Pi treats a missing first kept entry as retain-none.
-    let firstKept: string | null = null;
-    if (!fresh) {
-      const settings = SettingsManager.create(ctx.cwd, undefined, { projectTrusted: ctx.isProjectTrusted() }).getCompactionSettings(ctx.model);
-      const persistedIds = new Set(ctx.sessionManager.getBranch().map((entry) => entry.id));
-      firstKept = firstKeptEntryId(event.context.contextEntries, persistedIds, settings.keepRecentTokens);
+  pi.on("agent_settled", (event, ctx) => {
+    const operation = pending;
+    if (!operation) return;
+    if (event.aborted || ctx.sessionManager.getSessionId() !== operation.sessionId) {
+      clearPending();
+      return;
     }
-    return {
-      entries: [
-        ...event.entries,
-        { type: "compaction", summary, firstKeptEntryId: firstKept },
-        { type: "custom_message", customType: "compact-continuation", content: "Continue the unfinished task described in the summary.", display: false },
-      ],
-      continue: true,
-    };
+    if (operation.running) return;
+    operation.running = true;
+    const isCurrent = () => pending === operation && ctx.sessionManager.getSessionId() === operation.sessionId;
+    adapter ??= createNativeCompactionAdapter();
+    operation.unregister = adapter.schedule(ctx.sessionManager, {
+      instructions: operation.instructions,
+      summary: operation.summary,
+      isCurrent,
+      prepare(session, tokensBefore, signal) {
+        operation.signal = signal;
+        let firstKept: string | null = null;
+        if (!operation.fresh) {
+          const settings = session.settingsManager.getCompactionSettings(session.model);
+          const persistedIds = new Set(session.sessionManager.getBranch().map((entry) => entry.id));
+          firstKept = firstKeptEntryId(session.sessionManager.buildSessionProjection().entries, persistedIds, settings.keepRecentTokens);
+        }
+        // An inert custom entry is a supported string boundary with no model messages.
+        // It lets native compaction retain no history without a nullable SDK result.
+        firstKept ??= session.sessionManager.appendCustomEntry("compact-retain-none");
+        return { summary: operation.summary, firstKeptEntryId: firstKept, tokensBefore };
+      },
+    });
+    ctx.compact({
+      customInstructions: operation.instructions,
+      onComplete() {
+        if (!isCurrent()) return;
+        clearPending();
+        if (operation.signal?.aborted) return;
+        pi.sendMessage({
+          customType: "compact-continuation", content: "Continue the unfinished task described in the summary.", display: false,
+        }, { triggerTurn: true, deliverAs: "followUp" });
+      },
+      onError(error) {
+        if (!isCurrent()) return;
+        clearPending();
+        if (operation.aborted) return;
+        pi.sendMessage({
+          customType: "compact-error", content: `Compaction failed: ${error.message}. Check the current session state before continuing.`, display: false,
+        }, { triggerTurn: true, deliverAs: "followUp" });
+      },
+    });
   });
 
-  pi.on("agent_settled", () => { pending = undefined; });
+  // Enable native before-compaction dispatch. The scoped SDK adapter supplies the
+  // authored result after every registered handler has had the chance to cancel.
+  pi.on("session_before_compact", () => {});
+  pi.on("session_compact_failed", (event) => {
+    if (pending?.running) pending.aborted = event.aborted;
+  });
   pi.on("session_shutdown", () => {
-    pending = undefined;
+    clearPending();
+    adapter?.dispose();
+    adapter = undefined;
     warnedThreshold = 0;
     lastCompactionId = undefined;
   });
