@@ -6,6 +6,10 @@ At a meaningful milestone, the working agent writes a summary of what is needed 
 
 The compaction replaces older conversation context with the supplied summary and retains a recent tail. The tail uses Pi's `compaction.keepRecentTokens` setting, including model-specific overrides, and keeps tool calls with their results. Retention is approximate and may keep less than the configured budget at a safe message boundary. With `fresh: true`, no tail is kept: the next request has the system prompt and the summary only, so the agent can continue with a clean context, for example to review its own work. Session history remains in the session file. The next request receives an extension-authored continuation, not a new human request. An aborted run or a session switch discards pending work.
 
+The checkpoint runs through Pi's native manual-compaction lifecycle. Other extensions receive `session_before_compact` and can cancel it; successful compactions deliver `session_compact` with the exact new saved entry. Pi awaits those hooks before the task continues. The native progress state and cancellation controls remain active.
+
+The extension uses a reversible adapter around public SDK methods. Native preparation uses an operation-local planning budget so short sessions reach the supplied-summary hook. The retained tail still uses the original resolved settings. For retain-none, an inert custom entry provides a valid boundary without adding a model message. No installed Pi files are changed.
+
 This tool does not change Pi's automatic compaction settings. Native automatic compaction remains available as an overflow fallback when enabled. Unlike native manual compaction, this tool does not check whether the context is large enough. The tool is model-only; call it directly, by itself.
 
 Pi warns the agent when estimated context usage reaches 80%, and again at each further 5% threshold. Each warning reports the current usage and remaining space and asks the agent to compact immediately. Warnings are not shown as user messages. After compaction, thresholds are rearmed; session switches clear the warning state. Usage is an estimate and can be unavailable until the provider reports token usage after compaction.
@@ -32,4 +36,4 @@ npm rebuild node-pty
 npm test
 ```
 
-The tests run real Pi processes with scripted model responses. No provider credentials or paid inference are needed. Use a Pi version that supports model-only tools, `terminate`, and `agent_before_settle` compaction entries.
+The tests run real Pi processes with scripted model responses. No provider credentials or paid inference are needed. Use a Pi version that supports model-only tools, `terminate`, `agent_settled`, and native compaction lifecycle events. To check an installed version explicitly, run `PI_COMPACT_TEST_PI=/absolute/path/to/pi npm test`.
