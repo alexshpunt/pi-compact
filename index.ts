@@ -31,9 +31,11 @@ export default function compactExtension(pi: ExtensionAPI) {
   let pending: {
     summary: string; fresh: boolean; sessionId: string; instructions: string;
     running: boolean; aborted: boolean; signal?: AbortSignal; unregister?: () => void;
+    resumeAutoCompaction: () => void;
   } | undefined;
   const clearPending = () => {
     pending?.unregister?.();
+    pending?.resumeAutoCompaction();
     pending = undefined;
   };
   let warnedThreshold = 0;
@@ -79,9 +81,11 @@ export default function compactExtension(pi: ExtensionAPI) {
     async execute(_id, { summary, fresh }, _signal, _onUpdate, ctx) {
       if (!summary.trim()) throw new Error("The summary must not be empty.");
       if (pending !== undefined) throw new Error("A compaction is already scheduled.");
+      adapter ??= createNativeCompactionAdapter();
       pending = {
         summary, fresh: fresh === true, sessionId: ctx.sessionManager.getSessionId(),
         instructions: `pi-compact:${randomUUID()}`, running: false, aborted: false,
+        resumeAutoCompaction: adapter.suspendAutoCompaction(),
       };
       return {
         content: [{ type: "text", text: "Compaction scheduled. This run will continue from your summary." }],
@@ -93,7 +97,7 @@ export default function compactExtension(pi: ExtensionAPI) {
 
   pi.on("agent_settled", (event, ctx) => {
     const operation = pending;
-    if (!operation) return;
+    if (!operation || !adapter) return;
     if (event.aborted || ctx.sessionManager.getSessionId() !== operation.sessionId) {
       clearPending();
       return;
@@ -101,7 +105,11 @@ export default function compactExtension(pi: ExtensionAPI) {
     if (operation.running) return;
     operation.running = true;
     const isCurrent = () => pending === operation && ctx.sessionManager.getSessionId() === operation.sessionId;
-    adapter ??= createNativeCompactionAdapter();
+    const finish = () => {
+      const current = isCurrent();
+      if (pending === operation) clearPending();
+      return current;
+    };
     operation.unregister = adapter.schedule(ctx.sessionManager, {
       instructions: operation.instructions,
       summary: operation.summary,
@@ -123,16 +131,14 @@ export default function compactExtension(pi: ExtensionAPI) {
     ctx.compact({
       customInstructions: operation.instructions,
       onComplete() {
-        if (!isCurrent()) return;
-        clearPending();
+        if (!finish()) return;
         if (operation.signal?.aborted) return;
         pi.sendMessage({
           customType: "compact-continuation", content: "Continue the unfinished task described in the summary.", display: false,
         }, { triggerTurn: true, deliverAs: "followUp" });
       },
       onError(error) {
-        if (!isCurrent()) return;
-        clearPending();
+        if (!finish()) return;
         if (operation.aborted) return;
         pi.sendMessage({
           customType: "compact-error", content: `Compaction failed: ${error.message}. Check the current session state before continuing.`, display: false,

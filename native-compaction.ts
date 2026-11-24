@@ -1,5 +1,6 @@
 import {
   AgentSession,
+  SettingsManager,
   type CompactionResult,
   type ExtensionRunner,
   type ExtensionContext,
@@ -19,6 +20,8 @@ interface AdapterState {
   requests: WeakMap<ReadonlySessionManager, AuthoredCompaction>;
   original: AgentSession["compact"];
   wrapped: AgentSession["compact"];
+  autoCompactionHolds: Set<symbol>;
+  restoreAutoCompaction?: () => void;
 }
 
 const adapterKey = Symbol.for("@alexshp/pi-compact/native-compaction");
@@ -127,7 +130,7 @@ export function createNativeCompactionAdapter() {
   let state = prototype[adapterKey];
   if (!state) {
     const original = prototype.compact;
-    state = { users: new Set(), requests: new WeakMap(), original, wrapped: original };
+    state = { users: new Set(), requests: new WeakMap(), original, wrapped: original, autoCompactionHolds: new Set() };
     const shared = state;
     shared.wrapped = function (this: AgentSession, ...args) {
       const request = shared.requests.get(this.sessionManager);
@@ -141,7 +144,20 @@ export function createNativeCompactionAdapter() {
   state.users.add(owner);
   const shared = state;
   let unregister = () => {};
+  const resumeAutoCompaction = () => {
+    if (!shared.autoCompactionHolds.delete(owner) || shared.autoCompactionHolds.size !== 0) return;
+    shared.restoreAutoCompaction?.();
+    shared.restoreAutoCompaction = undefined;
+  };
   return {
+    suspendAutoCompaction() {
+      // All native auto checks read this getter. The setter would persist the change.
+      if (shared.autoCompactionHolds.size === 0) {
+        shared.restoreAutoCompaction = override(SettingsManager.prototype, "getCompactionEnabled", () => false);
+      }
+      shared.autoCompactionHolds.add(owner);
+      return resumeAutoCompaction;
+    },
     schedule(manager: ReadonlySessionManager, request: AuthoredCompaction) {
       unregister();
       shared.requests.set(manager, request);
@@ -151,6 +167,7 @@ export function createNativeCompactionAdapter() {
       return unregister;
     },
     dispose() {
+      resumeAutoCompaction();
       unregister();
       shared.users.delete(owner);
       if (shared.users.size !== 0) return;
