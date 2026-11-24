@@ -10,7 +10,7 @@ The checkpoint runs through Pi's native manual-compaction lifecycle. Other exten
 
 The extension uses a reversible adapter around public SDK methods. Native preparation uses an operation-local planning budget so short sessions reach the supplied-summary hook. The retained tail still uses the original resolved settings. For retain-none, an inert custom entry provides a valid boundary without adding a model message. No installed Pi files are changed.
 
-This tool does not change Pi's automatic compaction settings. Native automatic compaction remains available as an overflow fallback when enabled. Unlike native manual compaction, this tool does not check whether the context is large enough. The tool is model-only; call it directly, by itself.
+The tool pauses Pi's automatic compaction, including overflow recovery, from the tool call until the checkpoint finishes or is cancelled. The pause applies within the current Pi process and does not change saved settings. Pi resumes its configured behavior before the next turn. Unlike native manual compaction, this tool does not check whether the context is large enough. The tool is model-only; call it directly, by itself.
 
 Pi warns the agent when estimated context usage reaches 80%, and again at each further 5% threshold. Each warning reports the current usage and remaining space and asks the agent to compact immediately. Warnings are not shown as user messages. After compaction, thresholds are rearmed; session switches clear the warning state. Usage is an estimate and can be unavailable until the provider reports token usage after compaction.
 
