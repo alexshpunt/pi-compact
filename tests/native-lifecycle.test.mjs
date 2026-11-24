@@ -129,6 +129,28 @@ test("fresh compaction retains native notifications but drops every old model-vi
   assert.ok(!resumed.some((message) => message.role === "toolResult" && message.toolCallId === "old-history"));
 });
 
+for (const mode of ["threshold", "cancel"]) {
+  test(`native automatic compaction resumes after the authored checkpoint (${mode})`, async (t) => {
+    const settings = { enabled: true, reserveTokens: 116000, keepRecentTokens: 0 };
+    const longText = text("Long assistant response. ".repeat(3200), { chunks: { kind: "fixed", size: 80000 } });
+    const { result, events } = await run(t, `native-auto-compaction-scope-${mode}`, [
+      assistantMessage([longText, ...compact("checkpoint", true).blocks], { stopReason: "toolUse" }),
+      assistantMessage([longText]),
+    ], mode, settings);
+
+    const before = matching(events, "before-compact");
+    assert.deepEqual(before.map(event => event.reason), ["manual", "threshold"]);
+    assert.ok(before.every(event => event.configuredSettings.enabled === true));
+    const branch = entries(result);
+    const saved = branch.filter(entry => entry.type === "compaction");
+    assert.deepEqual(saved.map(entry => entry.summary),
+      mode === "cancel" ? ["automatic-threshold-summary"] : [summary, "automatic-threshold-summary"]);
+    const continuation = mode === "cancel" ? "native-lifecycle-independent-follow-up" : "compact-continuation";
+    assert.ok(branch.some(entry => entry.type === "custom_message" && entry.customType === continuation));
+    assert.equal(result.providerRequests.length, 2);
+  });
+}
+
 test("identical repeated handoffs notify the exact new compaction once each", async (t) => {
   const { result, events } = await run(t, "native-identical-summary-lifecycle", [
     compact(), compact("checkpoint-2"), done(),

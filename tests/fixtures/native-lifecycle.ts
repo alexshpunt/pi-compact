@@ -56,6 +56,13 @@ export default function nativeLifecycleProbe(pi: ExtensionAPI) {
       type: "before-compact", reason: event.reason, willRetry: event.willRetry,
       configuredSettings: pi.getSettings().compaction,
     });
+    if ((mode === "threshold" || mode === "cancel") && event.reason === "threshold") return {
+      compaction: {
+        summary: "automatic-threshold-summary",
+        firstKeptEntryId: event.preparation.firstKeptEntryId,
+        tokensBefore: event.preparation.tokensBefore,
+      },
+    };
     if (mode === "cancel" || mode === "cancel-then-manual" && event.customInstructions !== "ordinary-manual-1495") return { cancel: true };
     if (event.customInstructions === "ordinary-manual-1495") return {
       compaction: {
